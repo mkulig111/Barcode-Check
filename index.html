@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Barcode Check</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0b0f14; color: #e8edf3;
+    font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    overscroll-behavior: none;
+  }
+  #app { display: flex; flex-direction: column; height: 100%; }
+
+  #topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; background: #11161d; gap: 10px; flex-wrap: wrap;
+  }
+  #topbar h1 { font-size: 16px; margin: 0; font-weight: 600; color: #9fb3c8; }
+
+  .target-select { display: flex; gap: 6px; }
+  .target-btn {
+    border: 2px solid #2a3744; background: #161d26; color: #cfe0ef;
+    border-radius: 10px; padding: 8px 14px; font-size: 16px; font-weight: 700;
+    cursor: pointer; transition: all .15s;
+  }
+  .target-btn.active { border-color: #2dd36f; background: #16321f; color: #6dffa6; }
+
+  #reader-wrap {
+    position: relative; flex: 1; background: #000; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #reader { width: 100%; height: 100%; }
+  #reader video { width: 100% !important; height: 100% !important; object-fit: cover; }
+
+  #flash {
+    position: absolute; inset: 0; pointer-events: none; opacity: 0;
+    transition: opacity .08s ease-out;
+  }
+  #flash.ok { background: rgba(45, 211, 111, .35); opacity: 1; }
+  #flash.bad { background: rgba(235, 50, 50, .45); opacity: 1; }
+
+  #status {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    padding: 16px 14px 22px; text-align: center;
+    background: linear-gradient(to top, rgba(0,0,0,.85), transparent);
+    pointer-events: none;
+  }
+  #status .code { font-size: 14px; color: #9fb3c8; word-break: break-all; }
+  #status .verdict { font-size: 26px; font-weight: 800; margin-top: 4px; }
+  .verdict-ok { color: #6dffa6; }
+  .verdict-bad { color: #ff7a7a; }
+  .verdict-none { color: #6e7f8f; }
+
+  #history {
+    max-height: 96px; overflow-y: auto; background: #11161d;
+    border-top: 1px solid #1c2630; font-size: 12px; padding: 6px 12px;
+  }
+  #history div { padding: 2px 0; display: flex; gap: 8px; }
+  .h-ok { color: #6dffa6; }
+  .h-bad { color: #ff7a7a; }
+
+  #permHint { padding: 16px; color: #9fb3c8; font-size: 14px; text-align: center; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <h1>Barcode Check</h1>
+    <div class="target-select">
+      <button class="target-btn" id="btn56" data-val="56">56</button>
+      <button class="target-btn" id="btn57" data-val="57">57</button>
+    </div>
+  </div>
+
+  <div id="reader-wrap">
+    <div id="reader"></div>
+    <div id="flash"></div>
+    <div id="status">
+      <div class="code" id="lastCode">Zeskanuj kod...</div>
+      <div class="verdict verdict-none" id="verdict"></div>
+    </div>
+  </div>
+
+  <div id="history"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+(function () {
+  const TARGET_KEY = 'barcodeCheckTarget';
+  let target = localStorage.getItem(TARGET_KEY) || '56';
+
+  const btn56 = document.getElementById('btn56');
+  const btn57 = document.getElementById('btn57');
+  const flashEl = document.getElementById('flash');
+  const lastCodeEl = document.getElementById('lastCode');
+  const verdictEl = document.getElementById('verdict');
+  const historyEl = document.getElementById('history');
+
+  function updateTargetUI() {
+    btn56.classList.toggle('active', target === '56');
+    btn57.classList.toggle('active', target === '57');
+  }
+  btn56.addEventListener('click', () => { target = '56'; localStorage.setItem(TARGET_KEY, target); updateTargetUI(); });
+  btn57.addEventListener('click', () => { target = '57'; localStorage.setItem(TARGET_KEY, target); updateTargetUI(); });
+  updateTargetUI();
+
+  // --- Audio feedback via WebAudio (no external files, instant) ---
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const audioCtx = new AudioCtx();
+
+  function unlockAudio() {
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+  document.addEventListener('touchstart', unlockAudio, { once: true });
+  document.addEventListener('click', unlockAudio, { once: true });
+
+  function beep(freq, durationMs, vol, delayMs) {
+    delayMs = delayMs || 0;
+    const start = audioCtx.currentTime + delayMs / 1000;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, start);
+    gain.gain.linearRampToValueAtTime(vol, start + 0.01);
+    gain.gain.linearRampToValueAtTime(0, start + durationMs / 1000);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(start);
+    osc.stop(start + durationMs / 1000 + 0.02);
+  }
+
+  function playOk() {
+    beep(1100, 110, 0.35);
+  }
+
+  function playAlarm() {
+    // distinct repeating alarm tone
+    for (let i = 0; i < 4; i++) {
+      beep(440, 140, 0.5, i * 180);
+    }
+  }
+
+  function vibrate(pattern) {
+    if (navigator.vibrate) navigator.vibrate(pattern);
+  }
+
+  function flash(cls) {
+    flashEl.className = '';
+    flashEl.classList.add(cls);
+    setTimeout(() => { flashEl.className = ''; }, 220);
+  }
+
+  function addHistory(code, prefix, ok) {
+    const row = document.createElement('div');
+    row.className = ok ? 'h-ok' : 'h-bad';
+    const time = new Date().toLocaleTimeString();
+    row.textContent = `${time}  ${prefix}  ${code}`;
+    historyEl.prepend(row);
+    while (historyEl.children.length > 30) historyEl.removeChild(historyEl.lastChild);
+  }
+
+  // extract the 5-digit static prefix, e.g. "86656" or "86657"
+  function extractPrefix(code) {
+    const match = code.trim().match(/^(\d{5})/);
+    return match ? match[1] : null;
+  }
+
+  let lastScan = '';
+  let lastScanTime = 0;
+  const DEDUPE_MS = 1500;
+
+  function onScanSuccess(decodedText) {
+    const now = Date.now();
+    if (decodedText === lastScan && now - lastScanTime < DEDUPE_MS) return;
+    lastScan = decodedText;
+    lastScanTime = now;
+
+    const prefix = extractPrefix(decodedText);
+    lastCodeEl.textContent = decodedText;
+
+    if (!prefix) {
+      verdictEl.textContent = 'Nieprawidlowy format';
+      verdictEl.className = 'verdict verdict-bad';
+      flash('bad');
+      playAlarm();
+      vibrate([200, 100, 200, 100, 200]);
+      addHistory(decodedText, '??', false);
+      return;
+    }
+
+    const last2 = prefix.slice(-2);
+    const ok = last2 === target;
+
+    if (ok) {
+      verdictEl.textContent = `OK (${prefix})`;
+      verdictEl.className = 'verdict verdict-ok';
+      flash('ok');
+      playOk();
+      vibrate(60);
+    } else {
+      verdictEl.textContent = `ALARM! ${prefix} != ${target}`;
+      verdictEl.className = 'verdict verdict-bad';
+      flash('bad');
+      playAlarm();
+      vibrate([200, 100, 200, 100, 200]);
+    }
+    addHistory(decodedText, prefix, ok);
+  }
+
+  function onScanFailure() {
+    // ignore - called continuously while no code is in frame
+  }
+
+  const html5QrCode = new Html5Qrcode('reader');
+  const config = {
+    fps: 15,
+    qrbox: undefined,
+    aspectRatio: window.innerWidth / window.innerHeight,
+    formatsToSupport: [
+      Html5QrcodeSupportedFormats.QR_CODE,
+      Html5QrcodeSupportedFormats.CODE_128,
+      Html5QrcodeSupportedFormats.CODE_39,
+      Html5QrcodeSupportedFormats.EAN_13,
+      Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.UPC_A,
+      Html5QrcodeSupportedFormats.UPC_E,
+      Html5QrcodeSupportedFormats.ITF,
+      Html5QrcodeSupportedFormats.DATA_MATRIX,
+    ],
+  };
+
+  Html5Qrcode.getCameras().then(() => {
+    html5QrCode.start(
+      { facingMode: 'environment' },
+      config,
+      onScanSuccess,
+      onScanFailure
+    ).catch(err => {
+      document.getElementById('reader').innerHTML =
+        '<div id="permHint">Nie udalo sie uruchomic kamery: ' + err + '</div>';
+    });
+  }).catch(err => {
+    document.getElementById('reader').innerHTML =
+      '<div id="permHint">Brak dostepu do kamery. Zezwol na uzycie kamery w przegladarce.<br>' + err + '</div>';
+  });
+})();
+</script>
+</body>
+</html>
