@@ -70,6 +70,21 @@
 
   #permHint { padding: 16px; color: #9fb3c8; font-size: 14px; text-align: center; }
 
+  #camControls {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 14px; background: #11161d; border-top: 1px solid #1c2630;
+  }
+  .cam-btn {
+    border: 2px solid #2a3744; background: #161d26; color: #cfe0ef;
+    border-radius: 10px; padding: 7px 12px; font-size: 13px; font-weight: 600;
+    cursor: pointer; white-space: nowrap;
+  }
+  .cam-btn.active { border-color: #ffd166; background: #332a14; color: #ffd166; }
+  .cam-btn[disabled] { opacity: .35; cursor: not-allowed; }
+  #zoomWrap { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 140px; }
+  #zoomWrap label { font-size: 12px; color: #9fb3c8; white-space: nowrap; }
+  #zoomRange { flex: 1; }
+
   #reportOverlay {
     position: fixed; inset: 0; background: rgba(0,0,0,.6);
     display: none; align-items: center; justify-content: center; padding: 20px; z-index: 50;
@@ -112,6 +127,15 @@
     <div id="status">
       <div class="code" id="lastCode">Zeskanuj kod...</div>
       <div class="verdict verdict-none" id="verdict"></div>
+    </div>
+  </div>
+
+  <div id="camControls">
+    <button class="cam-btn" id="torchBtn" disabled>Lampa</button>
+    <button class="cam-btn" id="focusBtn" disabled>Makro / Ostrosc</button>
+    <div id="zoomWrap">
+      <label for="zoomRange">Zoom</label>
+      <input type="range" id="zoomRange" min="1" max="1" step="0.1" value="1" disabled>
     </div>
   </div>
 
@@ -308,11 +332,16 @@
     // ignore - called continuously while no code is in frame
   }
 
-  const html5QrCode = new Html5Qrcode('reader');
+  const html5QrCode = new Html5Qrcode('reader', { verbose: false });
   const config = {
-    fps: 15,
-    qrbox: undefined,
+    fps: 20,
+    // Smaller decode area = less pixels to process per frame = faster scans.
+    qrbox: (viewfinderWidth, viewfinderHeight) => {
+      const size = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.65);
+      return { width: size, height: size };
+    },
     aspectRatio: window.innerWidth / window.innerHeight,
+    disableFlip: true,
     formatsToSupport: [
       Html5QrcodeSupportedFormats.QR_CODE,
       Html5QrcodeSupportedFormats.CODE_128,
@@ -326,13 +355,84 @@
     ],
   };
 
+  // --- Camera controls: torch, focus/macro, zoom ---
+  const torchBtn = document.getElementById('torchBtn');
+  const focusBtn = document.getElementById('focusBtn');
+  const zoomRange = document.getElementById('zoomRange');
+  let torchOn = false;
+  let macroOn = false;
+
+  function setupCameraControls() {
+    let caps;
+    try {
+      caps = html5QrCode.getRunningTrackCameraCapabilities();
+    } catch (e) {
+      return;
+    }
+
+    const torchFeature = caps.torchFeature && caps.torchFeature();
+    if (torchFeature && torchFeature.isSupported()) {
+      torchBtn.disabled = false;
+      torchBtn.addEventListener('click', () => {
+        torchOn = !torchOn;
+        torchFeature.apply(torchOn).catch(() => {});
+        torchBtn.classList.toggle('active', torchOn);
+      });
+    }
+
+    const focusModeFeature = caps.focusModeFeature && caps.focusModeFeature();
+    const focusDistanceFeature = caps.focusDistanceFeature && caps.focusDistanceFeature();
+    const canFocus =
+      (focusModeFeature && focusModeFeature.isSupported()) ||
+      (focusDistanceFeature && focusDistanceFeature.isSupported());
+    if (canFocus) {
+      focusBtn.disabled = false;
+      focusBtn.addEventListener('click', () => {
+        macroOn = !macroOn;
+        focusBtn.classList.toggle('active', macroOn);
+        if (macroOn) {
+          // Force close-focus (macro-like) for small/dense codes held near the lens.
+          if (focusDistanceFeature && focusDistanceFeature.isSupported()) {
+            focusDistanceFeature.apply(focusDistanceFeature.min()).catch(() => {});
+          } else if (focusModeFeature && focusModeFeature.isSupported()) {
+            focusModeFeature.apply('manual').catch(() => {});
+          }
+        } else if (focusModeFeature && focusModeFeature.isSupported()) {
+          focusModeFeature.apply('continuous').catch(() => {});
+        }
+      });
+    }
+
+    const zoomFeature = caps.zoomFeature && caps.zoomFeature();
+    if (zoomFeature && zoomFeature.isSupported()) {
+      zoomRange.min = zoomFeature.min();
+      zoomRange.max = zoomFeature.max();
+      zoomRange.step = zoomFeature.step() || 0.1;
+      zoomRange.value = zoomFeature.value();
+      zoomRange.disabled = false;
+      zoomRange.addEventListener('input', () => {
+        zoomFeature.apply(parseFloat(zoomRange.value)).catch(() => {});
+      });
+    }
+  }
+
   Html5Qrcode.getCameras().then(() => {
     html5QrCode.start(
       { facingMode: 'environment' },
       config,
       onScanSuccess,
       onScanFailure
-    ).catch(err => {
+    ).then(() => {
+      setupCameraControls();
+      // Prefer continuous autofocus by default for fast, sharp scans.
+      try {
+        const caps = html5QrCode.getRunningTrackCameraCapabilities();
+        const focusModeFeature = caps.focusModeFeature && caps.focusModeFeature();
+        if (focusModeFeature && focusModeFeature.isSupported()) {
+          focusModeFeature.apply('continuous').catch(() => {});
+        }
+      } catch (e) {}
+    }).catch(err => {
       document.getElementById('reader').innerHTML =
         '<div id="permHint">Nie udalo sie uruchomic kamery: ' + err + '</div>';
     });
