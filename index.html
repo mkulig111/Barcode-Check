@@ -47,6 +47,7 @@
   }
   #flash.ok { background: rgba(45, 211, 111, .35); opacity: 1; }
   #flash.bad { background: rgba(235, 50, 50, .45); opacity: 1; }
+  #flash.dup { background: rgba(255, 209, 102, .4); opacity: 1; }
 
   #status {
     position: absolute; bottom: 0; left: 0; right: 0;
@@ -59,6 +60,7 @@
   .verdict-ok { color: #6dffa6; }
   .verdict-bad { color: #ff7a7a; }
   .verdict-none { color: #6e7f8f; }
+  .verdict-dup { color: #ffd166; }
 
   #history {
     max-height: 96px; overflow-y: auto; background: #11161d;
@@ -211,6 +213,7 @@
   let stats = (savedState && savedState.stats) || { total: 0, ok: 0, ng: 0 };
   let sessionStart = (savedState && new Date(savedState.sessionStart)) || new Date();
   let scanRecords = (savedState && savedState.scanRecords) || [];
+  const scannedCodes = new Set(scanRecords.map(r => r.code));
 
   function csvEscape(value) {
     const s = String(value);
@@ -275,6 +278,7 @@
     stats = { total: 0, ok: 0, ng: 0 };
     sessionStart = new Date();
     scanRecords = [];
+    scannedCodes.clear();
     historyEl.innerHTML = '';
     reportText.value = buildReport();
     saveState();
@@ -354,6 +358,7 @@
     historyEl.prepend(row);
     while (historyEl.children.length > 30) historyEl.removeChild(historyEl.lastChild);
     scanRecords.push({ time: new Date().toISOString(), code, prefix, ok });
+    scannedCodes.add(code);
     saveState();
   }
 
@@ -383,8 +388,16 @@
     lastScan = decodedText;
     lastScanTime = now;
 
-    const prefix = extractPrefix(decodedText);
     lastCodeEl.textContent = decodedText;
+
+    if (scannedCodes.has(decodedText)) {
+      verdictEl.textContent = 'DUPLIKAT';
+      verdictEl.className = 'verdict verdict-dup';
+      flash('dup');
+      return;
+    }
+
+    const prefix = extractPrefix(decodedText);
 
     if (!prefix) {
       verdictEl.textContent = 'Nieprawidlowy format';
