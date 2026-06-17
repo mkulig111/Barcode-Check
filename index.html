@@ -108,6 +108,9 @@
   #copyBtn { border-color: #2dd36f; background: #16321f; color: #6dffa6; }
   #copyBtn.copied { border-color: #6dffa6; }
   #resetBtn { border-color: #ff7a7a; color: #ffb3b3; }
+  #shareBtn {
+    flex: 0 0 auto; font-size: 18px; line-height: 1; padding: 10px 14px;
+  }
 </style>
 </head>
 <body>
@@ -148,6 +151,7 @@
     <textarea id="reportText" readonly></textarea>
     <div class="report-actions">
       <button id="copyBtn">Kopiuj</button>
+      <button id="shareBtn" title="Udostepnij CSV" aria-label="Udostepnij CSV">📤</button>
       <button id="resetBtn">Wyzeruj</button>
       <button id="closeReportBtn">Zamknij</button>
     </div>
@@ -172,9 +176,48 @@
   const copyBtn = document.getElementById('copyBtn');
   const resetBtn = document.getElementById('resetBtn');
   const closeReportBtn = document.getElementById('closeReportBtn');
+  const shareBtn = document.getElementById('shareBtn');
 
   let stats = { total: 0, ok: 0, ng: 0 };
   let sessionStart = new Date();
+  let scanRecords = [];
+
+  function csvEscape(value) {
+    const s = String(value);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  function buildCSV() {
+    const rows = [['Czas', 'Kod', 'Prefiks', 'Wynik']];
+    scanRecords.forEach(r => rows.push([r.time, r.code, r.prefix, r.ok ? 'OK' : 'NG']));
+    return rows.map(row => row.map(csvEscape).join(',')).join('\n');
+  }
+
+  async function shareOrDownloadCSV() {
+    const csv = buildCSV();
+    const fileName = `barcode-check-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`;
+    const file = new File([csv], fileName, { type: 'text/csv' });
+
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: 'Raport skanowania' });
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;
+      }
+    }
+
+    const url = URL.createObjectURL(file);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  shareBtn.addEventListener('click', shareOrDownloadCSV);
 
   function buildReport() {
     const lines = [
@@ -197,6 +240,7 @@
   resetBtn.addEventListener('click', () => {
     stats = { total: 0, ok: 0, ng: 0 };
     sessionStart = new Date();
+    scanRecords = [];
     historyEl.innerHTML = '';
     reportText.value = buildReport();
   });
@@ -274,6 +318,7 @@
     row.textContent = `${time}  ${prefix}  ${code}`;
     historyEl.prepend(row);
     while (historyEl.children.length > 30) historyEl.removeChild(historyEl.lastChild);
+    scanRecords.push({ time: new Date().toISOString(), code, prefix, ok });
   }
 
   // extract the 5-digit static prefix, e.g. "86656" or "86657"
