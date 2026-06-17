@@ -187,9 +187,30 @@
   const closeReportBtn = document.getElementById('closeReportBtn');
   const shareBtn = document.getElementById('shareBtn');
 
-  let stats = { total: 0, ok: 0, ng: 0 };
-  let sessionStart = new Date();
-  let scanRecords = [];
+  const STATE_KEY = 'barcodeCheckState';
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STATE_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function saveState() {
+    try {
+      localStorage.setItem(STATE_KEY, JSON.stringify({
+        stats, sessionStart: sessionStart.toISOString(), scanRecords,
+      }));
+    } catch (e) {}
+  }
+
+  const savedState = loadState();
+  let stats = (savedState && savedState.stats) || { total: 0, ok: 0, ng: 0 };
+  let sessionStart = (savedState && new Date(savedState.sessionStart)) || new Date();
+  let scanRecords = (savedState && savedState.scanRecords) || [];
 
   function csvEscape(value) {
     const s = String(value);
@@ -256,6 +277,7 @@
     scanRecords = [];
     historyEl.innerHTML = '';
     reportText.value = buildReport();
+    saveState();
   });
   copyBtn.addEventListener('click', async () => {
     try {
@@ -332,7 +354,18 @@
     historyEl.prepend(row);
     while (historyEl.children.length > 30) historyEl.removeChild(historyEl.lastChild);
     scanRecords.push({ time: new Date().toISOString(), code, prefix, ok });
+    saveState();
   }
+
+  function restoreHistoryUI() {
+    scanRecords.forEach(r => {
+      const row = document.createElement('div');
+      row.className = r.ok ? 'h-ok' : 'h-bad';
+      row.textContent = `${new Date(r.time).toLocaleTimeString()}  ${r.prefix}  ${r.code}`;
+      historyEl.prepend(row);
+    });
+  }
+  restoreHistoryUI();
 
   // extract the 5-digit static prefix, e.g. "86656" or "86657"
   function extractPrefix(code) {
