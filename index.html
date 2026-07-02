@@ -491,7 +491,7 @@
 
   // --- Scanner: native BarcodeDetector (fast) with html5-qrcode fallback ---
 
-  const NATIVE_FORMATS = ['qr_code', 'code_128', 'code_39', 'data_matrix', 'ean_13', 'ean_8', 'itf', 'upc_a', 'upc_e'];
+  const NATIVE_FORMATS = ['qr_code'];
   const hasBarcodeDetector = 'BarcodeDetector' in window;
 
   function startNativeScanner() {
@@ -555,10 +555,6 @@
       disableFlip: true,
       formatsToSupport: [
         Html5QrcodeSupportedFormats.QR_CODE,
-        Html5QrcodeSupportedFormats.CODE_128,
-        Html5QrcodeSupportedFormats.DATA_MATRIX,
-        Html5QrcodeSupportedFormats.CODE_39,
-        Html5QrcodeSupportedFormats.EAN_13,
       ],
     };
     Html5Qrcode.getCameras().then(() => {
