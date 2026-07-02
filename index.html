@@ -495,6 +495,14 @@
   const hasBarcodeDetector = 'BarcodeDetector' in window;
 
   function startNativeScanner() {
+    let detector;
+    try {
+      detector = new BarcodeDetector({ formats: ['qr_code'] });
+    } catch (e) {
+      startFallbackScanner();
+      return;
+    }
+
     const video = document.createElement('video');
     video.setAttribute('playsinline', '');
     video.setAttribute('muted', '');
@@ -504,45 +512,44 @@
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-    const supportedFormats = BarcodeDetector.getSupportedFormats
-      ? BarcodeDetector.getSupportedFormats().then(supported => NATIVE_FORMATS.filter(f => supported.includes(f)))
-      : Promise.resolve(NATIVE_FORMATS);
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+    }).then(stream => {
+      video.srcObject = stream;
+      video.play();
+      const track = stream.getVideoTracks()[0];
+      setupCameraControls(track);
 
-    supportedFormats.then(formats => {
-      const detector = new BarcodeDetector({ formats });
+      let detectorOkCount = 0;
+      let lastFrameTime = 0;
+      const MIN_INTERVAL = 50;
 
-      navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-      }).then(stream => {
-        video.srcObject = stream;
-        video.play();
-        const track = stream.getVideoTracks()[0];
-        setupCameraControls(track);
-
-        let scanning = true;
-        let lastFrameTime = 0;
-        const MIN_INTERVAL = 50;
-
-        function tick(ts) {
-          if (!scanning) return;
-          requestAnimationFrame(tick);
-          if (ts - lastFrameTime < MIN_INTERVAL) return;
-          lastFrameTime = ts;
-          if (video.readyState < 2) return;
-
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          ctx.drawImage(video, 0, 0);
-
-          detector.detect(canvas).then(results => {
-            if (results.length > 0) onScanSuccess(results[0].rawValue);
-          }).catch(() => {});
-        }
+      function tick(ts) {
         requestAnimationFrame(tick);
-      }).catch(err => {
-        document.getElementById('reader').innerHTML =
-          '<div id="permHint">Brak dostepu do kamery: ' + err + '</div>';
-      });
+        if (ts - lastFrameTime < MIN_INTERVAL) return;
+        lastFrameTime = ts;
+        if (video.readyState < 2) return;
+
+        if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
+        if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0);
+
+        detector.detect(canvas).then(results => {
+          detectorOkCount++;
+          if (results.length > 0) onScanSuccess(results[0].rawValue);
+        }).catch(() => {
+          // If detector fails several times in a row, it may not actually support qr_code
+          // on this device — fall back to JS library.
+          if (detectorOkCount === 0) {
+            document.getElementById('reader').innerHTML = '';
+            startFallbackScanner();
+          }
+        });
+      }
+      requestAnimationFrame(tick);
+    }).catch(err => {
+      document.getElementById('reader').innerHTML =
+        '<div id="permHint">Brak dostepu do kamery: ' + err + '</div>';
     });
   }
 
