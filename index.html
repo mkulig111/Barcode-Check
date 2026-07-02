@@ -608,11 +608,7 @@
     });
   }
 
-  if (hasBarcodeDetector) {
-    startNativeScanner();
-  } else {
-    startFallbackScanner();
-  }
+  startFallbackScanner();
 })();
 </script>
 </body>
