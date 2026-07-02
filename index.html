@@ -436,114 +436,180 @@
     // ignore - called continuously while no code is in frame
   }
 
-  const html5QrCode = new Html5Qrcode('reader', { verbose: false });
-  const config = {
-    fps: 20,
-    // Smaller decode area = less pixels to process per frame = faster scans.
-    qrbox: (viewfinderWidth, viewfinderHeight) => {
-      const size = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.65);
-      return { width: size, height: size };
-    },
-    aspectRatio: window.innerWidth / window.innerHeight,
-    disableFlip: true,
-    formatsToSupport: [
-      Html5QrcodeSupportedFormats.QR_CODE,
-      Html5QrcodeSupportedFormats.CODE_128,
-      Html5QrcodeSupportedFormats.CODE_39,
-      Html5QrcodeSupportedFormats.EAN_13,
-      Html5QrcodeSupportedFormats.EAN_8,
-      Html5QrcodeSupportedFormats.UPC_A,
-      Html5QrcodeSupportedFormats.UPC_E,
-      Html5QrcodeSupportedFormats.ITF,
-      Html5QrcodeSupportedFormats.DATA_MATRIX,
-    ],
-  };
-
   // --- Camera controls: torch, focus/macro, zoom ---
   const torchBtn = document.getElementById('torchBtn');
   const focusBtn = document.getElementById('focusBtn');
   const zoomRange = document.getElementById('zoomRange');
   let torchOn = false;
   let macroOn = false;
+  let activeTrack = null;
 
-  function setupCameraControls() {
-    let caps;
-    try {
-      caps = html5QrCode.getRunningTrackCameraCapabilities();
-    } catch (e) {
-      return;
-    }
+  function setupCameraControls(track) {
+    activeTrack = track;
+    if (!track) return;
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
 
-    const torchFeature = caps.torchFeature && caps.torchFeature();
-    if (torchFeature && torchFeature.isSupported()) {
+    if (caps.torch) {
       torchBtn.disabled = false;
       torchBtn.addEventListener('click', () => {
         torchOn = !torchOn;
-        torchFeature.apply(torchOn).catch(() => {});
+        track.applyConstraints({ advanced: [{ torch: torchOn }] }).catch(() => {});
         torchBtn.classList.toggle('active', torchOn);
       });
     }
 
-    const focusModeFeature = caps.focusModeFeature && caps.focusModeFeature();
-    const focusDistanceFeature = caps.focusDistanceFeature && caps.focusDistanceFeature();
-    const canFocus =
-      (focusModeFeature && focusModeFeature.isSupported()) ||
-      (focusDistanceFeature && focusDistanceFeature.isSupported());
-    if (canFocus) {
+    if (caps.focusMode) {
       focusBtn.disabled = false;
       focusBtn.addEventListener('click', () => {
         macroOn = !macroOn;
         focusBtn.classList.toggle('active', macroOn);
         if (macroOn) {
-          // Force close-focus (macro-like) for small/dense codes held near the lens.
-          if (focusDistanceFeature && focusDistanceFeature.isSupported()) {
-            focusDistanceFeature.apply(focusDistanceFeature.min()).catch(() => {});
-          } else if (focusModeFeature && focusModeFeature.isSupported()) {
-            focusModeFeature.apply('manual').catch(() => {});
-          }
-        } else if (focusModeFeature && focusModeFeature.isSupported()) {
-          focusModeFeature.apply('continuous').catch(() => {});
+          const constraints = { advanced: [{ focusMode: 'manual' }] };
+          if (caps.focusDistance) constraints.advanced[0].focusDistance = caps.focusDistance.min;
+          track.applyConstraints(constraints).catch(() => {});
+        } else {
+          track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
         }
       });
     }
 
-    const zoomFeature = caps.zoomFeature && caps.zoomFeature();
-    if (zoomFeature && zoomFeature.isSupported()) {
-      zoomRange.min = zoomFeature.min();
-      zoomRange.max = zoomFeature.max();
-      zoomRange.step = zoomFeature.step() || 0.1;
-      zoomRange.value = zoomFeature.value();
+    if (caps.zoom) {
+      zoomRange.min = caps.zoom.min;
+      zoomRange.max = caps.zoom.max;
+      zoomRange.step = caps.zoom.step || 0.1;
+      zoomRange.value = caps.zoom.min;
       zoomRange.disabled = false;
       zoomRange.addEventListener('input', () => {
-        zoomFeature.apply(parseFloat(zoomRange.value)).catch(() => {});
+        track.applyConstraints({ advanced: [{ zoom: parseFloat(zoomRange.value) }] }).catch(() => {});
       });
+    }
+
+    if (caps.focusMode) {
+      track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
     }
   }
 
-  Html5Qrcode.getCameras().then(() => {
-    html5QrCode.start(
-      { facingMode: 'environment' },
-      config,
-      onScanSuccess,
-      onScanFailure
-    ).then(() => {
-      setupCameraControls();
-      // Prefer continuous autofocus by default for fast, sharp scans.
-      try {
-        const caps = html5QrCode.getRunningTrackCameraCapabilities();
-        const focusModeFeature = caps.focusModeFeature && caps.focusModeFeature();
-        if (focusModeFeature && focusModeFeature.isSupported()) {
-          focusModeFeature.apply('continuous').catch(() => {});
+  // --- Scanner: native BarcodeDetector (fast) with html5-qrcode fallback ---
+
+  const NATIVE_FORMATS = ['qr_code', 'code_128', 'code_39', 'data_matrix', 'ean_13', 'ean_8', 'itf', 'upc_a', 'upc_e'];
+  const hasBarcodeDetector = 'BarcodeDetector' in window;
+
+  function startNativeScanner() {
+    const video = document.createElement('video');
+    video.setAttribute('playsinline', '');
+    video.setAttribute('muted', '');
+    video.style.cssText = 'width:100%;height:100%;object-fit:cover;';
+    document.getElementById('reader').appendChild(video);
+
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    const supportedFormats = BarcodeDetector.getSupportedFormats
+      ? BarcodeDetector.getSupportedFormats().then(supported => NATIVE_FORMATS.filter(f => supported.includes(f)))
+      : Promise.resolve(NATIVE_FORMATS);
+
+    supportedFormats.then(formats => {
+      const detector = new BarcodeDetector({ formats });
+
+      navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      }).then(stream => {
+        video.srcObject = stream;
+        video.play();
+        const track = stream.getVideoTracks()[0];
+        setupCameraControls(track);
+
+        let scanning = true;
+        let lastFrameTime = 0;
+        const MIN_INTERVAL = 50;
+
+        function tick(ts) {
+          if (!scanning) return;
+          requestAnimationFrame(tick);
+          if (ts - lastFrameTime < MIN_INTERVAL) return;
+          lastFrameTime = ts;
+          if (video.readyState < 2) return;
+
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0);
+
+          detector.detect(canvas).then(results => {
+            if (results.length > 0) onScanSuccess(results[0].rawValue);
+          }).catch(() => {});
         }
-      } catch (e) {}
+        requestAnimationFrame(tick);
+      }).catch(err => {
+        document.getElementById('reader').innerHTML =
+          '<div id="permHint">Brak dostepu do kamery: ' + err + '</div>';
+      });
+    });
+  }
+
+  function startFallbackScanner() {
+    const html5QrCode = new Html5Qrcode('reader', { verbose: false });
+    const config = {
+      fps: 25,
+      qrbox: (w, h) => { const s = Math.floor(Math.min(w, h) * 0.7); return { width: s, height: s }; },
+      aspectRatio: window.innerWidth / window.innerHeight,
+      disableFlip: true,
+      formatsToSupport: [
+        Html5QrcodeSupportedFormats.QR_CODE,
+        Html5QrcodeSupportedFormats.CODE_128,
+        Html5QrcodeSupportedFormats.DATA_MATRIX,
+        Html5QrcodeSupportedFormats.CODE_39,
+        Html5QrcodeSupportedFormats.EAN_13,
+      ],
+    };
+    Html5Qrcode.getCameras().then(() => {
+      html5QrCode.start({ facingMode: 'environment' }, config, onScanSuccess, () => {})
+        .then(() => {
+          try {
+            const caps = html5QrCode.getRunningTrackCameraCapabilities();
+            const track = html5QrCode.getRunningTrackSettings && html5QrCode.getRunningTrackSettings();
+            setupCameraControls(null);
+            const torchF = caps.torchFeature && caps.torchFeature();
+            if (torchF && torchF.isSupported()) {
+              torchBtn.disabled = false;
+              torchBtn.addEventListener('click', () => {
+                torchOn = !torchOn;
+                torchF.apply(torchOn).catch(() => {});
+                torchBtn.classList.toggle('active', torchOn);
+              });
+            }
+            const focusF = caps.focusModeFeature && caps.focusModeFeature();
+            if (focusF && focusF.isSupported()) {
+              focusBtn.disabled = false;
+              focusBtn.addEventListener('click', () => {
+                macroOn = !macroOn;
+                focusBtn.classList.toggle('active', macroOn);
+                macroOn ? focusF.apply('manual').catch(() => {}) : focusF.apply('continuous').catch(() => {});
+              });
+              focusF.apply('continuous').catch(() => {});
+            }
+            const zoomF = caps.zoomFeature && caps.zoomFeature();
+            if (zoomF && zoomF.isSupported()) {
+              zoomRange.min = zoomF.min(); zoomRange.max = zoomF.max();
+              zoomRange.step = zoomF.step() || 0.1; zoomRange.value = zoomF.value();
+              zoomRange.disabled = false;
+              zoomRange.addEventListener('input', () => zoomF.apply(parseFloat(zoomRange.value)).catch(() => {}));
+            }
+          } catch (e) {}
+        }).catch(err => {
+          document.getElementById('reader').innerHTML =
+            '<div id="permHint">Nie udalo sie uruchomic kamery: ' + err + '</div>';
+        });
     }).catch(err => {
       document.getElementById('reader').innerHTML =
-        '<div id="permHint">Nie udalo sie uruchomic kamery: ' + err + '</div>';
+        '<div id="permHint">Brak dostepu do kamery. Zezwol na uzycie kamery w przegladarce.<br>' + err + '</div>';
     });
-  }).catch(err => {
-    document.getElementById('reader').innerHTML =
-      '<div id="permHint">Brak dostepu do kamery. Zezwol na uzycie kamery w przegladarce.<br>' + err + '</div>';
-  });
+  }
+
+  if (hasBarcodeDetector) {
+    startNativeScanner();
+  } else {
+    startFallbackScanner();
+  }
 })();
 </script>
 </body>
